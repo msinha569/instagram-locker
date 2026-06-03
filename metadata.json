@@ -1,0 +1,6 @@
+{
+  "name": "Instagram Locker",
+  "description": "Automatically locks Instagram after 10 minutes of usage and unlocks it after 20 minutes of not using it to improve digital wellness.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
