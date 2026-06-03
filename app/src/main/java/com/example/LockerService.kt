@@ -47,6 +47,7 @@ class LockerService : Service() {
     private var overlayView: ComposeView? = null
     private var overlayLifecycleOwner: OverlayLifecycleOwner? = null
     private var lastKnownApp: String? = null
+    private var lastUpdateTimeMs: Long = 0L
 
     companion object {
         private const val TAG = "InstagramLockerService"
@@ -125,11 +126,20 @@ class LockerService : Service() {
 
     private fun startTracking() {
         trackingJob?.cancel()
+        lastUpdateTimeMs = android.os.SystemClock.elapsedRealtime()
         trackingJob = serviceScope.launch {
             while (isActive) {
                 try {
                     val foregroundApp = getForegroundApp(this@LockerService)
                     val isInstagramForeground = (foregroundApp == INSTAGRAM_PACKAGE)
+
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    var deltaTime = now - lastUpdateTimeMs
+                    lastUpdateTimeMs = now
+
+                    if (deltaTime < 0L) {
+                        deltaTime = 0L
+                    }
 
                     // Read configurations
                     val isTest = InstagramLockerManager.isTestMode.value
@@ -150,12 +160,21 @@ class LockerService : Service() {
                     var currentInactive = InstagramLockerManager.inactiveDurationMs.value
                     var currentStatus = InstagramLockerManager.lockStatus.value
 
-                    Log.d(TAG, "Poll - App: $foregroundApp, Usage: $currentUsage, Inactive: $currentInactive, Status: $currentStatus")
+                    Log.d(TAG, "Poll - App: $foregroundApp, DeltaTime: ${deltaTime}ms, Usage: $currentUsage, Inactive: $currentInactive, Status: $currentStatus")
 
                     if (currentStatus == LockStatus.UNLOCKED) {
                         if (isInstagramForeground) {
-                            currentUsage += 1000L
-                            currentInactive = 0L // Reset inactive count, since they just opened it
+                            val activeDelta = minOf(deltaTime, 2000L)
+                            val inactiveDelta = maxOf(0L, deltaTime - 2000L)
+
+                            currentInactive += inactiveDelta
+                            if (currentInactive >= maxCooldown) {
+                                currentUsage = 0L
+                                currentInactive = 0L
+                            }
+
+                            currentUsage += activeDelta
+                            currentInactive = 0L // Reset inactive count, since they are actively using it now
                             
                             if (currentUsage >= maxUsage) {
                                 currentStatus = LockStatus.LOCKED
@@ -163,7 +182,7 @@ class LockerService : Service() {
                             }
                         } else {
                             // Instagram is not active
-                            currentInactive += 1000L
+                            currentInactive += deltaTime
                             if (currentInactive >= maxCooldown) {
                                 // Left inactive long enough, restore fully to fresh status
                                 currentUsage = 0L
@@ -172,7 +191,7 @@ class LockerService : Service() {
                         }
                     } else { // LOCKED State
                         // Instagram is locked. Cooldown ticks up continuously
-                        currentInactive += 1000L
+                        currentInactive += deltaTime
                         
                         if (currentInactive >= maxCooldown) {
                             currentStatus = LockStatus.UNLOCKED
