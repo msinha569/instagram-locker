@@ -46,6 +46,7 @@ class LockerService : Service() {
     private var windowManager: WindowManager? = null
     private var overlayView: ComposeView? = null
     private var overlayLifecycleOwner: OverlayLifecycleOwner? = null
+    private var lastKnownApp: String? = null
 
     companion object {
         private const val TAG = "InstagramLockerService"
@@ -278,39 +279,54 @@ class LockerService : Service() {
     }
 
     private fun getForegroundApp(context: Context): String? {
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        val isInteractive = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
+            powerManager.isInteractive
+        } else {
+            @Suppress("DEPRECATION")
+            powerManager.isScreenOn
+        }
+        if (!isInteractive) {
+            lastKnownApp = null
+            return null
+        }
+
         val usageStatsManager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val endTime = System.currentTimeMillis()
-        val startTime = endTime - 15 * 1000 // 15 seconds window
+        
+        // If we don't have a last known app, query a wider window (15 minutes) to initialize it correctly.
+        // Otherwise, query a narrow window (30 seconds) for efficiency.
+        val windowMs = if (lastKnownApp == null) 15 * 60 * 1000L else 30 * 1000L
+        val startTime = endTime - windowMs
         
         val events = usageStatsManager.queryEvents(startTime, endTime)
         val event = UsageEvents.Event()
-        var lastResumedApp: String? = null
-        var lastResumedTime = 0L
+        
+        var hasResumedEvent = false
+        var lastApp: String? = lastKnownApp
+        var lastTime = 0L
 
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
             if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
-                if (event.timeStamp > lastResumedTime) {
-                    lastResumedApp = event.packageName
-                    lastResumedTime = event.timeStamp
+                if (event.timeStamp >= lastTime) {
+                    lastApp = event.packageName
+                    lastTime = event.timeStamp
+                    hasResumedEvent = true
+                }
+            } else if (event.eventType == UsageEvents.Event.ACTIVITY_PAUSED) {
+                if (event.packageName == lastApp && event.timeStamp >= lastTime) {
+                    lastApp = null
+                    lastTime = event.timeStamp
                 }
             }
         }
 
-        if (lastResumedApp != null) {
-            return lastResumedApp
+        if (hasResumedEvent || lastApp == null) {
+            lastKnownApp = lastApp
         }
-
-        // Method B: Fallback daily analytics sorting
-        val stats = usageStatsManager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, endTime - 3600 * 1000, endTime)
-        if (!stats.isNullOrEmpty()) {
-            val latest = stats.maxByOrNull { it.lastTimeUsed }
-            if (latest != null && (endTime - latest.lastTimeUsed < 5000)) {
-                return latest.packageName
-            }
-        }
-
-        return null
+        
+        return lastKnownApp
     }
 
     override fun onDestroy() {
